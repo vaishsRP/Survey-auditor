@@ -124,6 +124,104 @@ Rules:
     return _parse_json(raw)
 
 
+_ANALYZE_SYSTEM_PROMPT = (
+    "You are a senior psychometrician specialising in Total Survey Error "
+    "(TSE) methodology (Groves et al., 2009). A rule-based detector has "
+    "already scanned the survey using keyword and regex matching. Your "
+    "job is to find any bias issues that a keyword-and-regex system "
+    "would plausibly miss.\n\n"
+    "Common gaps in rule-based detection:\n"
+    "- Colloquial leading words not in a keyword list (super, cool, "
+    "awesome, amazing, dope, sick, etc.).\n"
+    "- Idiomatic framings that prime a response without using flagged "
+    "words.\n"
+    "- Subtle social-desirability framing on financial, health, or "
+    "environmental topics.\n"
+    "- Presupposition (the question assumes a fact that hasn't been "
+    "established).\n"
+    "- Domain-specific terms with implicit valence.\n\n"
+    "Only return flags you are confident about. Do NOT repeat obvious "
+    "keyword matches a rule layer would already catch (e.g. don't flag "
+    "'agree' for acquiescence — the rules handle that). You are "
+    "augmenting the rules, not duplicating them.\n\n"
+    "Use the same issue names where applicable: double_barrelled, "
+    "acquiescence_bias, complexity, vague_quantifiers, leading_language, "
+    "negative_wording, financial_sensitivity, environmental_sensitivity. "
+    "You may invent additional issue names if a pattern doesn't fit "
+    "those categories, as long as it has a defensible psychometric "
+    "grounding.\n\n"
+    "Severity tiers: critical, moderate, advisory.\n\n"
+    "Respond only in valid JSON. No prose, no code fences."
+)
+
+
+def ai_analyze_survey(questions: List[str], language: str = "en") -> dict:
+    """One LLM call returning extra flags the rule-based layer might miss."""
+    if not questions:
+        return {"questions": [], "survey_level": []}
+
+    lang_name = "Dutch" if language.lower() == "nl" else "English"
+    numbered = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(questions))
+
+    user_prompt = f"""Analyze this numbered survey in {lang_name}.
+
+{numbered}
+
+For each question, return any bias flags a rule-based keyword/regex
+layer would plausibly miss. Skip flags that are obvious keyword hits
+(those are already covered). Also identify any survey-level issues.
+
+Return ONLY valid JSON in this exact shape:
+
+{{
+  "questions": [
+    {{
+      "index": <int>,
+      "extra_flags": [
+        {{
+          "issue": "<snake_case>",
+          "severity": "critical | moderate | advisory",
+          "explanation": "<one sentence in {lang_name}>",
+          "matched_text": "<exact words or null>",
+          "theory": "<one-line psychometric citation>"
+        }}
+      ]
+    }}
+  ],
+  "survey_level": [
+    {{
+      "issue": "<snake_case>",
+      "severity": "<tier>",
+      "explanation": "<one sentence>",
+      "matched_text": "<or null>",
+      "theory": "<citation>"
+    }}
+  ]
+}}
+
+Rules:
+- If a question has nothing extra to add, return "extra_flags": [].
+- Every flag must include a theory citation.
+- Be honest. No invented flags.
+- Output JSON only.
+"""
+
+    try:
+        client = _get_client()
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": _ANALYZE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        raw = completion.choices[0].message.content or ""
+    except Exception as exc:
+        return {"error": True, "message": str(exc)}
+    return _parse_json(raw)
+
+
 def simulate_bias_impact(
     original: str, rewritten: str, flags: List[dict]
 ) -> dict:

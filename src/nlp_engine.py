@@ -171,6 +171,9 @@ def check_leading_language(question: str) -> dict:
 
     critical_en = [
         "excellent", "terrible", "awful", "worst",
+        "amazing", "awesome", "fantastic", "wonderful",
+        "perfect", "brilliant", "outstanding", "horrible",
+        "love", "hate", "loved", "hated",
         "problem", "failure", "mistake", "wrong",
         "success", "obviously", "clearly",
         "concerned", "worried", "disappointed",
@@ -178,13 +181,20 @@ def check_leading_language(question: str) -> dict:
     ]
     critical_nl = [
         "uitstekend", "verschrikkelijk", "slechtste",
+        "fantastisch", "perfect", "prachtig",
         "probleem", "falen", "fout", "verkeerd",
         "succes", "duidelijk",
         "bezorgd", "teleurgesteld",
         "gelukkig", "helaas",
     ]
-    advisory_en = ["best", "great", "important", "critical"]
-    advisory_nl = ["beste", "geweldig", "belangrijk", "kritiek"]
+    advisory_en = [
+        "best", "great", "important", "critical",
+        "super", "cool", "nice", "lovely", "good", "bad",
+    ]
+    advisory_nl = [
+        "beste", "geweldig", "belangrijk", "kritiek",
+        "leuk", "mooi", "super", "goed", "slecht",
+    ]
 
     lowered = question.lower()
     for word in critical_en + critical_nl:

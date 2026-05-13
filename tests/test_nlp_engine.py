@@ -49,6 +49,18 @@ def test_leading_language_no_match_is_clean():
     assert flag["flagged"] is False
 
 
+def test_leading_language_catches_super_cool():
+    # Regression: "super cool" used to slip through completely.
+    flag = check_leading_language("How would you rate our super cool app?")
+    assert flag["flagged"] is True
+
+
+def test_leading_language_catches_amazing():
+    flag = check_leading_language("How would you rate our amazing service?")
+    assert flag["flagged"] is True
+    assert flag["severity"] == "critical"
+
+
 # --- vague quantifiers -------------------------------------------------------
 
 def test_vague_quantifier_match():

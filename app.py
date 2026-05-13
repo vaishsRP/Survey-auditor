@@ -19,7 +19,11 @@ from src.methodology import (
     FINANCIAL_METHODOLOGY_SUGGESTIONS,
     COMPLEXITY_SUGGESTIONS,
 )
-from src.llm_refiner import rewrite_question, simulate_bias_impact
+from src.llm_refiner import (
+    rewrite_question,
+    simulate_bias_impact,
+    ai_analyze_survey,
+)
 
 load_dotenv()
 
@@ -42,6 +46,12 @@ def cached_simulate_bias_impact(original, rewritten, issues, severities):
         for i, s in zip(issues, severities)
     ]
     return simulate_bias_impact(original, rewritten, flags)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def cached_ai_analyze_survey(questions, lang):
+    """One LLM call covers the whole survey. Cached by (tuple of questions, lang)."""
+    return ai_analyze_survey(list(questions), language=lang)
 
 
 st.set_page_config(
@@ -71,8 +81,16 @@ STRINGS = {
         "single_paste_placeholder": (
             "How would you rate our excellent and easy-to-use app?"
         ),
-        "ai_toggle": "Include AI rewrites (slower)",
+        "analyze_toggle": "Use AI to also analyze (catches what rules miss)",
+        "analyze_help": (
+            "The rule-based keyword list is incomplete and is updated as "
+            "gaps are found. Enable this to let the LLM scan the survey "
+            "for colloquial or subtle bias the rules would miss."
+        ),
+        "ai_toggle": "Use AI to rewrite flagged questions (slower)",
         "simulation_toggle": "Include bias-impact simulation",
+        "source_rule": "rule",
+        "source_ai": "AI",
         "audit_button": "Audit survey",
         "single_button": "Audit question",
         "score_label": "Quality score",
@@ -145,8 +163,17 @@ STRINGS = {
         "single_paste_placeholder": (
             "Hoe zou u onze uitstekende en gebruiksvriendelijke app beoordelen?"
         ),
-        "ai_toggle": "Inclusief AI-herschrijvingen (langzamer)",
+        "analyze_toggle": "Gebruik AI om ook te analyseren (vangt op wat regels missen)",
+        "analyze_help": (
+            "De op trefwoorden gebaseerde lijst is onvolledig en wordt "
+            "bijgewerkt zodra hiaten worden gevonden. Schakel dit in om "
+            "de LLM de enquête te laten scannen op informele of subtiele "
+            "bias die de regels missen."
+        ),
+        "ai_toggle": "Gebruik AI om gemarkeerde vragen te herschrijven (langzamer)",
         "simulation_toggle": "Inclusief bias-impact simulatie",
+        "source_rule": "regel",
+        "source_ai": "AI",
         "audit_button": "Enquête auditen",
         "single_button": "Vraag auditen",
         "score_label": "Kwaliteitsscore",
@@ -358,63 +385,110 @@ def _build_report_text(audit_results, lang, survey_flags=None):
     return buf.getvalue()
 
 
-def _audit_one(question, include_ai, include_sim, lang):
-    """Run all checks (and optional LLM layers) on one question."""
-    lang_lc = lang.lower()
+def _run_deterministic(question, lang_lc):
+    """Run rule-based checks + methodology match. Returns a partial result."""
     flags = collect_all_flags(question, language=lang_lc)
-    score = compute_question_score(flags)
-
+    for f in flags:
+        f["source"] = "rule"
     methodology_key = _financial_keyword_match(flags)
-    methodology_suggestion = (
-        FINANCIAL_METHODOLOGY_SUGGESTIONS[methodology_key]
-        if methodology_key
-        else None
-    )
-
-    rewrite = None
-    simulation = None
-
-    if include_ai and flags:
-        issues = tuple(f["issue"] for f in flags)
-        severities = tuple(f["severity"] for f in flags)
-        theories = tuple(f["theory"] for f in flags)
-        rewrite = cached_rewrite_question(
-            question, issues, severities, theories, lang_lc
-        )
-
-        # Honest re-audit: run the deterministic checks on the rewrite.
-        if rewrite and not rewrite.get("error") and rewrite.get("rewritten"):
-            rewritten_flags = collect_all_flags(
-                rewrite["rewritten"], language=lang_lc
-            )
-            rewrite["rewritten_flags"] = rewritten_flags
-            rewrite["rewritten_score"] = compute_question_score(rewritten_flags)
-            rewrite["original_score"] = score
-
-            if include_sim:
-                simulation = cached_simulate_bias_impact(
-                    question, rewrite["rewritten"], issues, severities
-                )
-
     return {
         "question": question,
         "flags": flags,
-        "score": score,
-        "methodology_suggestion": methodology_suggestion,
         "methodology_key": methodology_key,
-        "rewrite": rewrite,
-        "simulation": simulation,
+        "methodology_suggestion": (
+            FINANCIAL_METHODOLOGY_SUGGESTIONS[methodology_key]
+            if methodology_key
+            else None
+        ),
     }
+
+
+def _maybe_rewrite_and_sim(result, lang_lc, include_sim):
+    """Call rewrite + (optional) bias-sim on a question that has flags."""
+    flags = result["flags"]
+    if not flags:
+        return None, None
+    issues = tuple(f["issue"] for f in flags)
+    severities = tuple(f["severity"] for f in flags)
+    theories = tuple(f.get("theory", "") for f in flags)
+    rewrite = cached_rewrite_question(
+        result["question"], issues, severities, theories, lang_lc
+    )
+    simulation = None
+    if rewrite and not rewrite.get("error") and rewrite.get("rewritten"):
+        rewritten_flags = collect_all_flags(rewrite["rewritten"], language=lang_lc)
+        for f in rewritten_flags:
+            f["source"] = "rule"
+        rewrite["rewritten_flags"] = rewritten_flags
+        rewrite["rewritten_score"] = compute_question_score(rewritten_flags)
+        rewrite["original_score"] = result["score"]
+        if include_sim:
+            simulation = cached_simulate_bias_impact(
+                result["question"], rewrite["rewritten"], issues, severities
+            )
+    return rewrite, simulation
+
+
+def _audit_survey(questions, lang, include_analyze, include_rewrite, include_sim):
+    """Run the full audit flow over a list of questions."""
+    lang_lc = lang.lower()
+    results = [_run_deterministic(q, lang_lc) for q in questions]
+
+    # Optional AI analyze: one call augments per-question flags.
+    ai_error = None
+    if include_analyze:
+        ai = cached_ai_analyze_survey(tuple(questions), lang_lc)
+        if ai.get("error"):
+            ai_error = ai.get("message") or ai.get("raw", "Unknown error")
+        else:
+            by_index = {
+                q.get("index"): q.get("extra_flags", [])
+                for q in ai.get("questions", [])
+            }
+            for i, r in enumerate(results, start=1):
+                for f in by_index.get(i, []):
+                    f["source"] = "ai"
+                    r["flags"].append(f)
+            ai_survey_extra = ai.get("survey_level", []) or []
+            for f in ai_survey_extra:
+                f["source"] = "ai"
+    else:
+        ai_survey_extra = []
+
+    for r in results:
+        r["score"] = compute_question_score(r["flags"])
+
+    # Rewrite + bias-sim after flags are finalised.
+    for r in results:
+        rewrite, simulation = (None, None)
+        if include_rewrite:
+            rewrite, simulation = _maybe_rewrite_and_sim(r, lang_lc, include_sim)
+        r["rewrite"] = rewrite
+        r["simulation"] = simulation
+
+    # Survey-level: deterministic + AI extras.
+    survey_flags = survey_level_flags(questions, language=lang_lc)
+    for f in survey_flags:
+        f["source"] = "rule"
+    survey_flags.extend(ai_survey_extra)
+
+    return results, survey_flags, ai_error
 
 
 # --- rendering ---------------------------------------------------------------
 
 def render_flag(flag, lang):
     sev_label = _t(lang, f"flag_{flag['severity']}")
-    st.markdown(
-        _severity_badge(flag["severity"], sev_label, flag["issue"]),
-        unsafe_allow_html=True,
+    source = flag.get("source", "rule")
+    source_label = _t(lang, f"source_{source}")
+    source_colour = "#6c757d" if source == "rule" else "#6610f2"
+    badge = _severity_badge(flag["severity"], sev_label, flag["issue"])
+    badge += (
+        f" <span style='background:{source_colour};color:white;"
+        f"padding:2px 6px;border-radius:4px;font-size:0.7em;"
+        f"margin-left:4px;'>{source_label}</span>"
     )
+    st.markdown(badge, unsafe_allow_html=True)
     st.markdown(
         f"<div style='margin:4px 0 2px 0;font-size:0.95em;'>"
         f"{flag['explanation']}</div>",
@@ -705,10 +779,16 @@ def main():
             height=200,
             key="survey_text",
         )
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
-            include_ai = st.checkbox(_t(lang, "ai_toggle"), key="include_ai_full")
+            include_analyze = st.checkbox(
+                _t(lang, "analyze_toggle"),
+                key="include_analyze_full",
+                help=_t(lang, "analyze_help"),
+            )
         with col_b:
+            include_ai = st.checkbox(_t(lang, "ai_toggle"), key="include_ai_full")
+        with col_c:
             include_sim = False
             if include_ai:
                 include_sim = st.checkbox(
@@ -722,17 +802,13 @@ def main():
             if not questions:
                 st.warning(_t(lang, "no_questions"))
             else:
-                progress = st.progress(0.0)
-                status = st.empty()
-                results = []
-                for i, q in enumerate(questions, start=1):
-                    status.text(f"{_t(lang, 'auditing')} {i}/{len(questions)}…")
-                    results.append(_audit_one(q, include_ai, include_sim, lang))
-                    progress.progress(i / len(questions))
-                status.empty()
-                progress.empty()
+                with st.spinner(_t(lang, "auditing")):
+                    results, survey_flags, ai_error = _audit_survey(
+                        questions, lang, include_analyze, include_ai, include_sim
+                    )
+                if ai_error:
+                    st.error(f"{_t(lang, 'api_error')}: {ai_error}")
 
-                survey_flags = survey_level_flags(questions, language=lang.lower())
                 if survey_flags:
                     st.markdown(f"### {_t(lang, 'survey_findings_header')}")
                     for f in survey_flags:
@@ -750,10 +826,16 @@ def main():
             placeholder=_t(lang, "single_paste_placeholder"),
             key="single_q",
         )
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
-            include_ai_s = st.checkbox(_t(lang, "ai_toggle"), key="include_ai_single")
+            include_analyze_s = st.checkbox(
+                _t(lang, "analyze_toggle"),
+                key="include_analyze_single",
+                help=_t(lang, "analyze_help"),
+            )
         with col_b:
+            include_ai_s = st.checkbox(_t(lang, "ai_toggle"), key="include_ai_single")
+        with col_c:
             include_sim_s = False
             if include_ai_s:
                 include_sim_s = st.checkbox(
@@ -765,11 +847,21 @@ def main():
                 st.warning(_t(lang, "no_questions"))
             else:
                 with st.spinner(_t(lang, "auditing")):
-                    item = _audit_one(
-                        single_q.strip(), include_ai_s, include_sim_s, lang
+                    results, survey_flags, ai_error = _audit_survey(
+                        [single_q.strip()],
+                        lang,
+                        include_analyze_s,
+                        include_ai_s,
+                        include_sim_s,
                     )
-                render_audit_card(item, lang, 1)
-                render_summary([item], lang)
+                if ai_error:
+                    st.error(f"{_t(lang, 'api_error')}: {ai_error}")
+                if survey_flags:
+                    for f in survey_flags:
+                        render_flag(f, lang)
+                    st.divider()
+                render_audit_card(results[0], lang, 1)
+                render_summary(results, lang, survey_flags=survey_flags)
 
 
 if __name__ == "__main__":
