@@ -5,6 +5,8 @@ measurement error that show up in research methods textbooks. It runs
 two layers of analysis: a deterministic rule-based layer, and an
 optional LLM rewrite layer powered by Groq.
 
+https://vaish-survey-auditor.streamlit.app/
+
 This is a student project. It is not a substitute for a trained
 survey methodologist. The goal is to make obvious problems easier to
 catch before a survey is sent out.
