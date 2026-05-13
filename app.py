@@ -513,7 +513,7 @@ def render_audit_card(item, lang, idx):
     preview = item["question"][:60] + ("…" if len(item["question"]) > 60 else "")
     header = f"Q{idx}. {preview}  -  Score: {score}/10"
 
-    with st.expander(header, expanded=False):
+    with st.expander(header, expanded=True):
         col_s, col_q = st.columns([1, 4])
         with col_s:
             st.markdown(
@@ -609,7 +609,8 @@ def _render_rewrite(item, rewrite, lang):
         remaining = rewrite.get("rewritten_flags") or []
         if remaining:
             with st.expander(
-                _t(lang, "remaining_label") + f" ({len(remaining)})"
+                _t(lang, "remaining_label") + f" ({len(remaining)})",
+                expanded=True,
             ):
                 for f in remaining:
                     render_flag(f, lang)
@@ -617,7 +618,7 @@ def _render_rewrite(item, rewrite, lang):
             st.success(_t(lang, "no_remaining"))
 
     trail = rewrite.get("audit_trail") or {}
-    with st.expander(_t(lang, "trail_label")):
+    with st.expander(_t(lang, "trail_label"), expanded=True):
         if trail.get("changes_made"):
             st.markdown(f"**{_t(lang, 'changes_label')}:**")
             for change in trail["changes_made"]:
