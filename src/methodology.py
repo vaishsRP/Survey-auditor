@@ -1,14 +1,4 @@
-"""
-Methodology suggestions: pure data module.
-
-Contains research-grounded alternatives for sensitive question topics
-and a list of generic complexity remediation strategies.
-
-References
-----------
-Tourangeau, R., & Yan, T. (2007). Sensitive questions in surveys.
-    Psychological Bulletin, 133(5), 859-883.
-"""
+"""Suggested alternatives for sensitive question topics."""
 
 FINANCIAL_METHODOLOGY_SUGGESTIONS = {
     "income": (
@@ -22,15 +12,14 @@ FINANCIAL_METHODOLOGY_SUGGESTIONS = {
         "accurate than 'Do you save regularly?'"
     ),
     "debt": (
-        "Frame as past behaviour rather than current state: 'Have you "
-        "ever used an overdraft facility?' reduces social desirability "
-        "pressure compared to 'Do you have debt?'"
+        "Frame as past behaviour: 'Have you ever used an overdraft "
+        "facility?' reduces social desirability pressure compared to "
+        "'Do you have debt?'"
     ),
     "invest": (
         "Use forced-choice between neutral options: 'Which best "
         "describes your approach: preserving capital / balancing growth "
-        "and safety / maximising growth?' avoids socially loaded "
-        "framing around investment."
+        "and safety / maximising growth?'"
     ),
     "sustainable": (
         "Separate stated preference from actual behaviour: ask 'In your "

@@ -1,27 +1,17 @@
-"""
-LLM-driven refinement layer.
-
-Uses the Groq API (model: ``llama-3.3-70b-versatile``) to rewrite
-flagged questions and to simulate the response-distribution impact of
-the rewrite. Prompts cast the model as a Total Survey Error (TSE)
-psychometrician so that rewrites are grounded in the same theoretical
-framework as the deterministic checks.
-"""
+"""Groq LLM layer: rewrite questions and simulate bias impact."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-from typing import List, Optional
+from typing import List
 
 from dotenv import load_dotenv
 
-# Load .env once at import time. dotenv silently no-ops if the file
-# is missing — the caller checks for the key.
 load_dotenv()
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 _SYSTEM_PROMPT = (
     "You are a senior psychometrician specialising in Total Survey "
@@ -30,71 +20,39 @@ _SYSTEM_PROMPT = (
     "framework (Groves et al., 2009) which identifies error sources as: "
     "construct validity, measurement, processing, and representation. "
     "You do not add bias or make assumptions about the intended answer. "
-    "You respond only in valid JSON."
+    "You respond only in valid JSON.\n\n"
+    "IMPORTANT - honesty requirement: Your rewrite will be re-audited "
+    "automatically by the same deterministic rules that produced the "
+    "flags you are given. Be completely honest. If you cannot eliminate "
+    "a flag without changing the question's measurement intent, leave "
+    "it and explain that in the rationale. Do not claim changes you did "
+    "not make. Listing fixes you did not actually implement will be "
+    "caught by the re-audit and undermines trust in the tool."
 )
 
 
 def _get_client():
-    """
-    Build a Groq client, raising a friendly error if no key is set.
-
-    Returns
-    -------
-    groq.Groq
-        Initialised Groq client.
-
-    Raises
-    ------
-    RuntimeError
-        If ``GROQ_API_KEY`` is not present in the environment.
-    """
+    """Build a Groq client or raise if GROQ_API_KEY is missing."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError(
             "GROQ_API_KEY is not set. Copy .env.example to .env and add "
             "your key from https://console.groq.com."
         )
-    from groq import Groq  # local import keeps module import cheap
-
+    from groq import Groq
     return Groq(api_key=api_key)
 
 
 def _strip_code_fences(text: str) -> str:
-    """
-    Remove markdown code fences from an LLM response.
-
-    Args
-    ----
-    text : str
-        Raw model output, possibly wrapped in ```json ... ``` fences.
-
-    Returns
-    -------
-    str
-        Cleaned string ready for ``json.loads``.
-    """
+    """Strip ``` fences from an LLM response."""
     cleaned = text.strip()
-    # Strip leading fence ``` or ```json
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-    # Strip trailing fence
     cleaned = re.sub(r"\s*```$", "", cleaned)
     return cleaned.strip()
 
 
 def _parse_json(raw: str) -> dict:
-    """
-    Parse a JSON response, returning an error envelope on failure.
-
-    Args
-    ----
-    raw : str
-        Raw model output.
-
-    Returns
-    -------
-    dict
-        Parsed JSON, or ``{"error": True, "raw": raw}`` on parse failure.
-    """
+    """Parse JSON or return an error envelope."""
     try:
         return json.loads(_strip_code_fences(raw))
     except (json.JSONDecodeError, ValueError):
@@ -102,45 +60,18 @@ def _parse_json(raw: str) -> dict:
 
 
 def rewrite_question(
-    question: str,
-    flags: List[dict],
-    language: str = "en",
+    question: str, flags: List[dict], language: str = "en"
 ) -> dict:
-    """
-    Ask the LLM to rewrite a flagged question.
-
-    Args
-    ----
-    question : str
-        The original survey question.
-    flags : list[dict]
-        Flags returned by ``nlp_engine.collect_all_flags``.
-    language : str
-        ``"en"`` or ``"nl"``. Drives the language of the rewrite and
-        explanations.
-
-    Returns
-    -------
-    dict
-        Parsed JSON with keys ``rewritten``, ``audit_trail``,
-        ``indirect_alternative``, ``cognitive_walkthrough``. If parsing
-        fails, returns ``{"error": True, "raw": ...}``. If the API call
-        fails, returns ``{"error": True, "message": ...}``.
-    """
+    """Ask the LLM to rewrite a flagged question."""
     lang_name = "Dutch" if language.lower() == "nl" else "English"
-
-    flag_lines = []
-    for f in flags:
-        flag_lines.append(
-            f"- {f['issue']} (severity: {f['severity']}). "
-            f"Theory: {f['theory']}"
-        )
-    flag_block = "\n".join(flag_lines) if flag_lines else "- (none)"
+    flag_block = "\n".join(
+        f"- {f['issue']} (severity: {f['severity']}). Theory: {f['theory']}"
+        for f in flags
+    ) or "- (none)"
 
     has_financial = any(
         f.get("issue") == "financial_sensitivity" for f in flags
     )
-
     if has_financial:
         indirect_placeholder = (
             f'"<a methodology-level alternative (not just a rewrite), '
@@ -172,7 +103,9 @@ Rules:
 - Do not introduce new bias.
 - Preserve the underlying measurement intent.
 - If no financial sensitivity is flagged, set indirect_alternative to null.
-- Output JSON only — no prose, no code fences.
+- Your rewrite will be re-audited. Be honest about which flags you
+  actually resolved. If a flag remains, say so plainly in the rationale.
+- Output JSON only. No prose, no code fences.
 """
 
     try:
@@ -186,36 +119,15 @@ Rules:
             temperature=0.2,
         )
         raw = completion.choices[0].message.content or ""
-    except Exception as exc:  # noqa: BLE001 — surface any API error
+    except Exception as exc:
         return {"error": True, "message": str(exc)}
-
     return _parse_json(raw)
 
 
 def simulate_bias_impact(
-    original: str,
-    rewritten: str,
-    flags: List[dict],
+    original: str, rewritten: str, flags: List[dict]
 ) -> dict:
-    """
-    Ask the LLM to simulate response-distribution impact of the rewrite.
-
-    Args
-    ----
-    original : str
-        The original question.
-    rewritten : str
-        The rewritten question.
-    flags : list[dict]
-        Flags detected on the original.
-
-    Returns
-    -------
-    dict
-        Parsed JSON with keys ``original_distribution``,
-        ``fixed_distribution``, ``estimated_bias_magnitude``,
-        ``business_impact``. On error, returns an error envelope.
-    """
+    """Ask the LLM to simulate the response-distribution difference."""
     flag_block = "\n".join(
         f"- {f['issue']} ({f['severity']})" for f in flags
     ) or "- (none)"
@@ -240,7 +152,7 @@ fields:
   "business_impact": "<one sentence: what business decision this bias could corrupt>"
 }}
 
-Output JSON only — no prose, no code fences.
+Output JSON only. No prose, no code fences.
 """
 
     try:
@@ -254,7 +166,6 @@ Output JSON only — no prose, no code fences.
             temperature=0.3,
         )
         raw = completion.choices[0].message.content or ""
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"error": True, "message": str(exc)}
-
     return _parse_json(raw)

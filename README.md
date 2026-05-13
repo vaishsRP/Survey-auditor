@@ -1,140 +1,152 @@
 # Survey Intelligence Auditor
 
-A two-layer survey quality analysis tool grounded in psychometric theory
-and behavioural science, designed for market research professionals.
+A Streamlit app that audits survey questions for the kinds of bias and
+measurement error that show up in research methods textbooks. It runs
+two layers of analysis: a deterministic rule-based layer, and an
+optional LLM rewrite layer powered by Groq.
 
-## Overview
+This is a student project. It is not a substitute for a trained
+survey methodologist. The goal is to make obvious problems easier to
+catch before a survey is sent out.
 
-Biased survey instruments are one of the most expensive — and most
-invisible — sources of decision error in modern organisations. When
-financial services firms set savings-product strategy from "Do you save
-regularly?" or brand teams set sustainability positioning from "Do you
-prefer eco-friendly products?", they are not measuring behaviour; they
-are measuring the social-desirability gradient of their own questions.
-The result is investment, segmentation, and pricing decisions made on
-data that systematically overstates responsible behaviour and
-understates difficulty. The Survey Intelligence Auditor exists to make
-that hidden measurement error visible *before* a survey is fielded, so
-that the resulting numbers can be trusted by the decision-makers who
-inherit them.
+## What problem this tries to solve
 
-## Why Two Layers
+When companies make decisions from surveys (pricing, segmentation,
+brand strategy, sustainability positioning), they assume the answers
+reflect what people actually think and do. A lot of the time they
+don't, because the questions are worded in ways that push respondents
+in a particular direction.
 
-The auditor combines two complementary engines:
+Two common examples:
 
-1. **A deterministic NLP layer.** Rule-based checks built on spaCy
-   dependency parsing, regex, and textstat readability scoring. Every
-   flag is reproducible, explainable, and auditable — the same question
-   produces the same flags every time.
-2. **An LLM refinement layer.** A Groq-hosted Llama 3.3 70B model,
-   prompted as a Total Survey Error psychometrician, produces rewrites
-   and bias-impact simulations conditional on the flags from layer 1.
+1. "Do you save money regularly?" People want to look responsible, so
+   they over-report saving behaviour.
+2. "Do you prefer sustainable products?" Same effect, called social
+   desirability bias.
 
-Neither layer alone is sufficient. Rule-based systems provide
-auditability; LLMs provide flexibility. Combining them reduces both
-false negatives (missed bias) and false positives (overclaiming):
-deterministic checks anchor the audit so a researcher can defend each
-flag, while the LLM layer captures the nuance — phrasing, register,
-respondent psychology — that no fixed rule can encode.
+Financial and environmental topics are especially affected by this.
+The auditor tries to flag these patterns before the survey goes live.
 
-## Detection Methods and Their Theoretical Basis
+## Why two layers
 
-### Double-barrelled questions
+The two layers do different things and neither is enough on its own:
 
-Two evaluative concepts joined by a coordinating conjunction force the
-respondent to give one answer to two questions. Detected via spaCy
-dependency parsing: a coordinating conjunction (`cc` dependency)
-linking two structurally parallel adjectives, verbs, or nouns. Grounded
-in the principle of cognitive consistency in survey response
-(Tourangeau, Rips, & Rasinski, 2000).
+- **The rule-based layer** uses spaCy, regex, and textstat. It is
+  deterministic, so the same question always produces the same flags.
+  This is the layer you can defend to a reviewer.
+- **The LLM layer** (Groq, default model `llama-3.3-70b-versatile`)
+  produces rewrites and simulates the response distribution. It is
+  more flexible but less predictable.
 
-### Acquiescence bias
+Rules give you auditability. The LLM gives you flexibility. Combining
+them means fewer missed issues (false negatives) and fewer over-claimed
+issues (false positives).
 
-Agree/disagree and yes/no framings invite a directional response
-regardless of content. Detected via keyword matching against agree /
-disagree / true-false phrases in English and Dutch. Grounded in
-Cronbach's (1946) work on response sets.
+## Checks implemented
 
-### Complexity
+Each check returns a severity (critical, moderate, advisory) and a
+short reference to the psychometric concept behind it.
 
-Questions that exceed a Flesch-Kincaid grade level of 10 impose
-cognitive load that prompts satisficing — respondents pick the first
-plausible answer rather than computing a considered one. Grounded in
-Krosnick (1991).
+- **Double-barrelled** (critical). Uses spaCy dependency parsing to
+  find coordinating conjunctions. Only flags when at least one side
+  is an adjective, so things like "name and email" or "save and
+  invest" are not flagged. Based on Tourangeau, Rips, & Rasinski
+  (2000).
+- **Acquiescence bias** (moderate). Looks for agree/disagree and
+  yes/no framing. Based on Cronbach (1946).
+- **Complexity** (moderate). Flesch-Kincaid grade level above 10.
+  This is calibrated for English, so for Dutch the number is rough.
+  Based on Krosnick's satisficing theory (1991).
+- **Vague quantifiers** (moderate). Words like "often", "rarely",
+  "sometimes". Based on Pepper (1981).
+- **Leading language** (critical or advisory). Strong words like
+  "excellent" or "terrible" are critical. Softer words like "best",
+  "great", "important", and "critical" are advisory because they
+  can be used neutrally. Based on Orne (1962).
+- **Negative wording** (critical). Tag questions like "don't you
+  think" or "isn't it". Based on Barnette (2000).
+- **Financial sensitivity** (critical) and **environmental
+  sensitivity** (moderate). Keyword based. Based on Edwards (1957)
+  and Tourangeau & Yan (2007).
+- **Categorical exhaustion** (advisory, survey level). Looks for
+  multiple-choice option lists missing "other" or "prefer not to
+  say". This now runs across the whole survey, not per question,
+  because real users paste the question and the options on separate
+  lines.
 
-### Vague quantifiers
+## The financial module
 
-Words like *often*, *rarely*, *sometimes* are interpreted differently
-across respondents, introducing measurement error that compounds across
-items. Grounded in Pepper's (1981) work on the quantification of
-frequency expressions.
+For financial topics, rewriting alone usually isn't enough. The
+literature suggests structural changes work better:
 
-### Leading language
+- Income brackets instead of open-ended salary fields.
+- Behavioural anchors ("In the last 3 months, how many times did you
+  transfer money to a savings account?") instead of self-image
+  questions ("Do you save regularly?").
+- Forced-choice between neutral options.
 
-Emotionally charged words (*excellent*, *terrible*, *concerned*,
-*obviously*) create demand characteristics: the question telegraphs the
-expected or socially desirable answer. Grounded in Orne's (1962)
-foundational work on demand characteristics in experimental settings,
-applied here to survey context.
+When the auditor detects a financial keyword, it shows one of these
+alternatives from `src/methodology.py` in addition to the LLM
+rewrite. Reference: Tourangeau & Yan (2007).
 
-### Negative wording
+## What was tightened after the first review
 
-Tag-style negative phrasings ("don't you think…", "isn't it…") increase
-parsing errors and interact pathologically with agree/disagree scales.
-Grounded in Barnette (2000).
+This is a student project, so it's worth being upfront about what
+needed fixing:
 
-### Financial and environmental sensitivity
+1. **Double-barrelled was too aggressive.** It flagged any
+   coordinated nouns, including "name and email". Now at least one
+   side has to be an adjective.
+2. **Leading words were all rated critical.** "Best" and "important"
+   are often used neutrally ("What's the best time to call?").
+   Those four words are now advisory instead of critical.
+3. **The LLM rewrite was never checked.** The LLM could claim it
+   fixed three issues but actually fix none. Now the rewrite is
+   automatically passed back through the deterministic checks. The
+   UI shows the original score and the new score side by side, plus
+   any flags that remain.
+4. **The LLM was not told to be honest about this.** The system
+   prompt now explicitly says the rewrite will be re-audited and
+   asks the model not to claim changes it did not make.
+5. **The categorical-exhaustion check almost never fired.** Most
+   people don't paste options into the question stem. It now runs
+   on the whole survey text.
+6. **Dutch support was half-hearted.** The double-barrelled check
+   now loads `nl_core_news_sm` when the language toggle is set to
+   NL. Flesch-Kincaid is still English-only; the README is upfront
+   about this.
+7. **The Groq model was hardcoded.** It is now read from the
+   `GROQ_MODEL` environment variable, defaulting to
+   `llama-3.3-70b-versatile`.
+8. **LLM calls weren't cached.** They are now wrapped in
+   `@st.cache_data`, so re-running the audit on the same questions
+   doesn't re-hit the API.
+9. **There were no tests.** There are now 19 tests in
+   `tests/test_nlp_engine.py` covering the changes above and the
+   golden case from the project brief.
+10. **"How many" was wrongly flagged as a vague quantifier.** "Many"
+    is in the keyword list because "Many people think X" is genuinely
+    vague. But "How many cups of coffee did you drink?" uses "many"
+    as a question word, not a vague claim. The check now skips
+    matches preceded by "how" (or "hoe" in Dutch).
 
-Topics where social desirability bias is most measurable: income,
-savings, debt, sustainability. Detected via topical keyword matching;
-flagged as critical for financial topics and moderate for environmental
-ones. Grounded in Edwards (1957) and Tourangeau & Yan (2007).
-
-### Categorical exhaustion
-
-Multiple-choice items without an *other* or *prefer not to say* option
-force respondents into ill-fitting buckets. Grounded in Schwarz's
-(1996) inclusion-theory account of how response options shape the
-respondent's frame of reference.
-
-## The Financial Sensitivity Module
-
-Financial topics — income, savings, debt, investment — require special
-treatment because the social-desirability gradient on these questions
-is unusually steep. Tourangeau & Yan (2007) document systematic
-overreporting of responsible behaviour and underreporting of
-problematic behaviour across financial-disclosure surveys, with effect
-sizes large enough to materially distort segmentation. Critically,
-*rewording* a sensitive question is rarely enough; structural
-methodology changes outperform rewording alone:
-
-- **Income brackets** instead of open-ended salary fields raise
-  response rates by 15–20% on sensitive items.
-- **Behavioural anchors** ("In the last 3 months, how many times did
-  you transfer money to a savings account?") outperform stated-habit
-  questions ("Do you save regularly?") by converting a self-image
-  judgement into a recall task.
-- **Forced-choice between neutral options** removes the socially loaded
-  scale altogether.
-
-When the auditor detects a financial keyword it surfaces a
-methodology-level alternative from `src/methodology.py` in addition to
-the standard rewrite — because in this domain, a better-worded version
-of the wrong instrument is still the wrong instrument.
-
-## Install and Run
+## Install and run
 
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
+# Optional, only needed for Dutch:
+python -m spacy download nl_core_news_sm
 ```
 
-Add your Groq key to `.env` (free key at
-[console.groq.com](https://console.groq.com)):
+Add your Groq key (free at console.groq.com). `.env` is gitignored so
+your key never ends up in the repo. `.env.example` is committed as a
+template:
 
 ```bash
 cp .env.example .env
-# edit .env and set GROQ_API_KEY
+# open .env in any editor and paste your key after GROQ_API_KEY=
+# optional: uncomment GROQ_MODEL to override the default
 ```
 
 Then:
@@ -143,48 +155,64 @@ Then:
 streamlit run app.py
 ```
 
-## References
+Run the tests:
 
-- Barnette, J. J. (2000). Effects of stem and Likert response option
-  reversals on survey internal consistency: If you feel the need, there
-  is a better alternative to using those negatively worded stems.
-  *Educational and Psychological Measurement, 60*(3), 361–370.
-- Cronbach, L. J. (1946). Response sets and test validity. *Educational
-  and Psychological Measurement, 6*(4), 475–494.
-- Edwards, A. L. (1957). *The social desirability variable in
-  personality assessment and research.* Dryden Press.
-- Groves, R. M., Fowler, F. J., Couper, M. P., Lepkowski, J. M.,
-  Singer, E., & Tourangeau, R. (2009). *Survey methodology* (2nd ed.).
-  Wiley.
-- Krosnick, J. A. (1991). Response strategies for coping with the
-  cognitive demands of attitude measures in surveys. *Applied
-  Cognitive Psychology, 5*(3), 213–236.
-- Orne, M. T. (1962). On the social psychology of the psychological
-  experiment: With particular reference to demand characteristics and
-  their implications. *American Psychologist, 17*(11), 776–783.
-- Pepper, S. (1981). Problems in the quantification of frequency
-  expressions. *New Directions for Methodology of Social and
-  Behavioral Science, 9*, 25–41.
-- Schwarz, N. (1996). *Cognition and communication: Judgmental biases,
-  research methods, and the logic of conversation.* Lawrence Erlbaum.
-- Tourangeau, R., Rips, L. J., & Rasinski, K. (2000). *The psychology
-  of survey response.* Cambridge University Press.
-- Tourangeau, R., & Yan, T. (2007). Sensitive questions in surveys.
-  *Psychological Bulletin, 133*(5), 859–883.
+```bash
+pytest tests/
+```
 
 ## Limitations
 
-1. **LLM rewrites introduce their own framing.** Every rewrite the
-   model produces is itself a survey-design decision and may carry
-   subtle bias of its own. All AI-suggested rewrites should be reviewed
-   by a researcher before deployment — the tool is a co-pilot, not an
-   author.
-2. **Readability scoring is English-only.** The complexity check uses
-   Flesch-Kincaid, which is calibrated on English text. Dutch surveys
-   are still passed through it for a rough indication, but the grade
-   level is not psychometrically validated for non-English language.
-3. **Social-desirability detection is keyword-based.** Indirect or
-   euphemistic references to sensitive topics — "money management",
-   "financial wellness", "everyday choices" — may evade the keyword
-   list and pass uninvestigated. A researcher in the loop remains
-   essential for topic sensitivity that the lexicon does not cover.
+I want to be honest about what this tool can and cannot do.
+
+1. **The LLM rewrite is a starting point, not a final answer.** Every
+   rewrite is itself a design choice and can introduce its own
+   subtle bias. A real researcher should still review anything
+   before it goes into a live survey.
+2. **Flesch-Kincaid is calibrated for English.** When the language
+   is set to Dutch, the complexity check still runs but the grade
+   level should be treated as a rough indicator only.
+3. **Social-desirability detection is keyword based.** Phrases like
+   "money management" or "financial wellness" can refer to
+   sensitive topics without using the keywords in the list. The
+   tool will miss those.
+4. **Each check returns at most one match per question.** If a
+   question contains three vague quantifiers, only the first is
+   shown. The score is still based on the flag triggering, so the
+   final number isn't wrong, but the explanation only mentions one
+   matched word.
+5. **Survey-level checks are minimal.** Only categorical exhaustion
+   currently runs across the whole survey. Other survey-wide
+   patterns (order effects, scale inconsistency, repeated leading
+   vocabulary) are not detected yet.
+6. **The scoring is simple.** Three advisories (-3) and one
+   critical (-3) come out to the same total. That is defensible
+   but not perfect.
+
+## References
+
+- Barnette, J. J. (2000). Effects of stem and Likert response option
+  reversals on survey internal consistency. *Educational and
+  Psychological Measurement, 60*(3), 361-370.
+- Cronbach, L. J. (1946). Response sets and test validity.
+  *Educational and Psychological Measurement, 6*(4), 475-494.
+- Edwards, A. L. (1957). *The social desirability variable in
+  personality assessment and research.* Dryden Press.
+- Groves, R. M., Fowler, F. J., Couper, M. P., Lepkowski, J. M.,
+  Singer, E., & Tourangeau, R. (2009). *Survey methodology* (2nd
+  ed.). Wiley.
+- Krosnick, J. A. (1991). Response strategies for coping with the
+  cognitive demands of attitude measures in surveys. *Applied
+  Cognitive Psychology, 5*(3), 213-236.
+- Orne, M. T. (1962). On the social psychology of the psychological
+  experiment. *American Psychologist, 17*(11), 776-783.
+- Pepper, S. (1981). Problems in the quantification of frequency
+  expressions. *New Directions for Methodology of Social and
+  Behavioral Science, 9*, 25-41.
+- Schwarz, N. (1996). *Cognition and communication: Judgmental
+  biases, research methods, and the logic of conversation.*
+  Lawrence Erlbaum.
+- Tourangeau, R., Rips, L. J., & Rasinski, K. (2000). *The
+  psychology of survey response.* Cambridge University Press.
+- Tourangeau, R., & Yan, T. (2007). Sensitive questions in surveys.
+  *Psychological Bulletin, 133*(5), 859-883.
