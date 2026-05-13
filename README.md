@@ -152,8 +152,13 @@ cp .env.example .env
 Then:
 
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
+
+(Using `python -m` makes sure Streamlit launches with the same Python
+that has spaCy and the model installed. On Windows in particular,
+plain `streamlit run app.py` can pick up a different interpreter and
+fail with a missing-model error.)
 
 Run the tests:
 
